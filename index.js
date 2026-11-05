@@ -388,6 +388,40 @@ app.delete('/api/wishlist/:studioId', verifyToken, async (req, res) => {
   }
 });
 
+// --- DASHBOARD ANALYTICS & STATS AGGREGATION ---
+
+app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
+  try {
+    const email = req.user.email;
+
+    // 1. Total listed studios as a Host
+    const totalListings = await studiosCollection.countDocuments({ ownerEmail: email });
+
+    // 2. Total reservations made as a Creator
+    const totalBookings = await bookingsCollection.countDocuments({ userEmail: email });
+
+    // 3. Total items in Wishlist
+    const totalWishlist = await wishlistCollection.countDocuments({ userEmail: email });
+
+    // 4. Financial metrics: Total spent on completed/pending bookings
+    const expenditureAggregate = await bookingsCollection.aggregate([
+      { $match: { userEmail: email, status: { $ne: 'Cancelled' } } },
+      { $group: { _id: null, totalSpent: { $sum: '$totalPrice' } } }
+    ]).toArray();
+
+    const totalSpent = expenditureAggregate.length > 0 ? expenditureAggregate[0].totalSpent : 0;
+
+    res.send({
+      totalListings,
+      totalBookings,
+      totalWishlist,
+      totalSpent
+    });
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to fetch dashboard metrics', error });
+  }
+});
+
 // Base Route
 app.get('/', (req, res) => {
   res.send('StudioSpace API Server is active and connected.');
