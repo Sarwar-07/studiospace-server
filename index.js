@@ -34,7 +34,7 @@ const client = new MongoClient(uri, {
   }
 });
 
-let db, studiosCollection, bookingsCollection;
+let db, studiosCollection, bookingsCollection, wishlistCollection;
 
 async function connectDB() {
   try {
@@ -42,6 +42,7 @@ async function connectDB() {
     db = client.db(process.env.DB_NAME || 'studiospace_db');
     studiosCollection = db.collection('studios');
     bookingsCollection = db.collection('bookings');
+    wishlistCollection = db.collection('wishlist');
     
     await client.db('admin').command({ ping: 1 });
     console.log(`Connected to MongoDB Atlas: database "${process.env.DB_NAME}" is ready!`);
@@ -237,8 +238,6 @@ app.post('/api/bookings', verifyToken, async (req, res) => {
       return res.status(400).send({ message: 'Start time must precede end time.' });
     }
 
-    // Double Booking Prevention Query:
-    // Check if any existing Confirmed or Pending booking for this studio on this date overlaps
     const existingConflict = await bookingsCollection.findOne({
       studioId: new ObjectId(studioId),
       bookingDate: bookingDate,
@@ -315,6 +314,77 @@ app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
     res.send({ success: true, message: 'Booking successfully cancelled' });
   } catch (error) {
     res.status(500).send({ message: 'Failed to cancel booking', error });
+  }
+});
+
+// --- OPTIONAL REQUIREMENT: SAVED STUDIOS WISHLIST ---
+
+// 1. Save Studio to Wishlist
+app.post('/api/wishlist', verifyToken, async (req, res) => {
+  try {
+    const { studioId } = req.body;
+    if (!studioId) return res.status(400).send({ message: 'Studio ID is required' });
+
+    const existing = await wishlistCollection.findOne({
+      userEmail: req.user.email,
+      studioId: new ObjectId(studioId)
+    });
+
+    if (existing) {
+      return res.status(409).send({ message: 'Studio already saved in your wishlist' });
+    }
+
+    const result = await wishlistCollection.insertOne({
+      userEmail: req.user.email,
+      studioId: new ObjectId(studioId),
+      createdAt: new Date()
+    });
+
+    res.status(201).send(result);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to add to wishlist', error });
+  }
+});
+
+// 2. Get User Wishlist with Studio Details via Aggregation
+app.get('/api/wishlist', verifyToken, async (req, res) => {
+  try {
+    const wishlist = await wishlistCollection.aggregate([
+      { $match: { userEmail: req.user.email } },
+      {
+        $lookup: {
+          from: 'studios',
+          localField: 'studioId',
+          foreignField: '_id',
+          as: 'studio'
+        }
+      },
+      { $unwind: '$studio' },
+      { $sort: { createdAt: -1 } }
+    ]).toArray();
+
+    res.send(wishlist);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to retrieve wishlist', error });
+  }
+});
+
+// 3. Remove Studio from Wishlist
+app.delete('/api/wishlist/:studioId', verifyToken, async (req, res) => {
+  try {
+    const { studioId } = req.params;
+    const result = await wishlistCollection.deleteOne({
+      userEmail: req.user.email,
+      studioId: new ObjectId(studioId)
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: 'Studio not found in wishlist' });
+    }
+
+    res.send({ success: true, message: 'Removed from wishlist' });
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to remove from wishlist', error });
   }
 });
 
