@@ -54,7 +54,6 @@ connectDB();
 
 // --- CHALLENGE 1: JWT & HTTPONLY COOKIE MIDDLEWARE ---
 
-// Middleware: Verify Token from HTTPOnly Cookies
 export const verifyToken = (req, res, next) => {
   const token = req.cookies?.token;
 
@@ -97,7 +96,135 @@ app.post('/api/auth/logout', (req, res) => {
   }).send({ success: true, message: 'Logged out successfully' });
 });
 
-// Health check
+// --- STUDIOS CRUD ENDPOINTS ---
+
+// 1. Featured Studios (Home page dynamic section - limit 6)
+app.get('/api/studios/featured', async (req, res) => {
+  try {
+    const featured = await studiosCollection
+      .find({})
+      .sort({ rating: -1, createdAt: -1 })
+      .limit(6)
+      .toArray();
+    res.send(featured);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to fetch featured studios', error });
+  }
+});
+
+// 2. Explore Studios (With category filtering and search queries)
+app.get('/api/studios', async (req, res) => {
+  try {
+    const { category, search } = req.query;
+    let query = {};
+
+    if (category && category !== 'All') {
+      query.category = category;
+    }
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { location: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const studios = await studiosCollection.find(query).toArray();
+    res.send(studios);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to fetch studios', error });
+  }
+});
+
+// 3. Single Studio Details
+app.get('/api/studios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
+    if (!studio) {
+      return res.status(404).send({ message: 'Studio space not found' });
+    }
+    res.send(studio);
+  } catch (error) {
+    res.status(400).send({ message: 'Invalid Studio ID format', error });
+  }
+});
+
+// 4. Add New Studio (Private Route - Guarded by verifyToken)
+app.post('/api/studios', verifyToken, async (req, res) => {
+  try {
+    const newStudio = {
+      ...req.body,
+      hourlyRate: parseFloat(req.body.hourlyRate),
+      securityDeposit: parseFloat(req.body.securityDeposit),
+      maxCapacity: parseInt(req.body.maxCapacity),
+      ownerEmail: req.user.email,
+      rating: 5.0,
+      reviewsCount: 0,
+      createdAt: new Date()
+    };
+
+    const result = await studiosCollection.insertOne(newStudio);
+    res.status(201).send(result);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to save studio listing', error });
+  }
+});
+
+// 5. My Studio Listings (Private Route - Filtered by authenticated ownerEmail)
+app.get('/api/my-listings', verifyToken, async (req, res) => {
+  try {
+    const listings = await studiosCollection
+      .find({ ownerEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(listings);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to retrieve your listings', error });
+  }
+});
+
+// 6. Update Studio Listing (Private Route - Ensures user owns the document)
+app.patch('/api/studios/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = { ...req.body };
+    delete updateData._id;
+    delete updateData.ownerEmail; // Prevent transferring ownership
+
+    if (updateData.hourlyRate) updateData.hourlyRate = parseFloat(updateData.hourlyRate);
+    if (updateData.securityDeposit) updateData.securityDeposit = parseFloat(updateData.securityDeposit);
+    if (updateData.maxCapacity) updateData.maxCapacity = parseInt(updateData.maxCapacity);
+
+    const filter = { _id: new ObjectId(id), ownerEmail: req.user.email };
+    const updateDoc = { $set: updateData };
+
+    const result = await studiosCollection.updateOne(filter, updateDoc);
+    if (result.matchedCount === 0) {
+      return res.status(403).send({ message: 'Unauthorized or listing does not exist' });
+    }
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to update studio listing', error });
+  }
+});
+
+// 7. Delete Studio Listing (Private Route - Ensures user owns the document)
+app.delete('/api/studios/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const filter = { _id: new ObjectId(id), ownerEmail: req.user.email };
+
+    const result = await studiosCollection.deleteOne(filter);
+    if (result.deletedCount === 0) {
+      return res.status(403).send({ message: 'Unauthorized or listing does not exist' });
+    }
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to delete studio listing', error });
+  }
+});
+
+// Base Route
 app.get('/', (req, res) => {
   res.send('StudioSpace API Server is active and connected.');
 });
