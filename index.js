@@ -189,7 +189,7 @@ app.patch('/api/studios/:id', verifyToken, async (req, res) => {
     const { id } = req.params;
     const updateData = { ...req.body };
     delete updateData._id;
-    delete updateData.ownerEmail; // Prevent transferring ownership
+    delete updateData.ownerEmail;
 
     if (updateData.hourlyRate) updateData.hourlyRate = parseFloat(updateData.hourlyRate);
     if (updateData.securityDeposit) updateData.securityDeposit = parseFloat(updateData.securityDeposit);
@@ -221,6 +221,100 @@ app.delete('/api/studios/:id', verifyToken, async (req, res) => {
     res.send(result);
   } catch (error) {
     res.status(500).send({ message: 'Failed to delete studio listing', error });
+  }
+});
+
+// --- CHALLENGE 2: BOOKINGS & DOUBLE-BOOKING PREVENTION ---
+
+// 1. Create Booking with Overlap Detection
+app.post('/api/bookings', verifyToken, async (req, res) => {
+  try {
+    const { studioId, bookingDate, startTime, endTime, hourlyRate, studioTitle, studioImage } = req.body;
+    const sTime = parseInt(startTime);
+    const eTime = parseInt(endTime);
+
+    if (sTime >= eTime) {
+      return res.status(400).send({ message: 'Start time must precede end time.' });
+    }
+
+    // Double Booking Prevention Query:
+    // Check if any existing Confirmed or Pending booking for this studio on this date overlaps
+    const existingConflict = await bookingsCollection.findOne({
+      studioId: new ObjectId(studioId),
+      bookingDate: bookingDate,
+      status: { $in: ['Confirmed', 'Pending'] },
+      $or: [
+        { startTime: { $lt: eTime, $gte: sTime } },
+        { endTime: { $gt: sTime, $lte: eTime } },
+        { startTime: { $lte: sTime }, endTime: { $gte: eTime } }
+      ]
+    });
+
+    if (existingConflict) {
+      return res.status(409).send({
+        message: 'Double Booking Conflict: This studio space is already booked during these hours. Please choose another time slot.'
+      });
+    }
+
+    const totalHours = eTime - sTime;
+    const totalPrice = totalHours * parseFloat(hourlyRate);
+
+    const newBooking = {
+      studioId: new ObjectId(studioId),
+      studioTitle,
+      studioImage,
+      hourlyRate: parseFloat(hourlyRate),
+      totalHours,
+      totalPrice,
+      bookingDate,
+      startTime: sTime,
+      endTime: eTime,
+      userEmail: req.user.email,
+      status: 'Pending',
+      createdAt: new Date()
+    };
+
+    const result = await bookingsCollection.insertOne(newBooking);
+    res.status(201).send(result);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to create booking', error });
+  }
+});
+
+// 2. My Bookings (Private Route - Fetch user reservations)
+app.get('/api/my-bookings', verifyToken, async (req, res) => {
+  try {
+    const bookings = await bookingsCollection
+      .find({ userEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(bookings);
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to fetch bookings', error });
+  }
+});
+
+// 3. Cancel Booking (Private Route - Only allowed for pending bookings)
+app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const filter = {
+      _id: new ObjectId(id),
+      userEmail: req.user.email,
+      status: 'Pending'
+    };
+
+    const result = await bookingsCollection.updateOne(filter, {
+      $set: { status: 'Cancelled', cancelledAt: new Date() }
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(400).send({ message: 'Booking cannot be cancelled or was not found' });
+    }
+
+    res.send({ success: true, message: 'Booking successfully cancelled' });
+  } catch (error) {
+    res.status(500).send({ message: 'Failed to cancel booking', error });
   }
 });
 
