@@ -17,9 +17,9 @@ const port = process.env.PORT || 5000;
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://studiospace-client.vercel.app'
-  ],
-  credentials: true
+    process.env.CLIENT_URL,
+  ].filter(Boolean),
+  credentials: true,
 }));
 app.use(express.json());
 app.use(cookieParser());
@@ -34,18 +34,16 @@ const client = new MongoClient(uri, {
   }
 });
 
-let db, studiosCollection, bookingsCollection, wishlistCollection;
+const db = client.db(process.env.DB_NAME || 'studiospace_db');
+const studiosCollection = db.collection('studios');
+const bookingsCollection = db.collection('bookings');
+const wishlistCollection = db.collection('wishlist');
 
 async function connectDB() {
   try {
     await client.connect();
-    db = client.db(process.env.DB_NAME || 'studiospace_db');
-    studiosCollection = db.collection('studios');
-    bookingsCollection = db.collection('bookings');
-    wishlistCollection = db.collection('wishlist');
-    
     await client.db('admin').command({ ping: 1 });
-    console.log(`Connected to MongoDB Atlas: database "${process.env.DB_NAME}" is ready!`);
+    console.log(`Connected to MongoDB Atlas: database "${process.env.DB_NAME || 'studiospace_db'}" is ready!`);
   } catch (error) {
     console.error('MongoDB connection failure:', error);
   }
@@ -62,7 +60,7 @@ export const verifyToken = (req, res, next) => {
     return res.status(401).send({ message: 'Unauthorized access: No token provided' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
       return res.status(401).send({ message: 'Unauthorized access: Invalid or expired token' });
     }
@@ -78,14 +76,17 @@ app.post('/api/auth/jwt', async (req, res) => {
     return res.status(400).send({ message: 'Email is required' });
   }
 
-  const token = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign(
+    { email },
+    process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET,
+    { expiresIn: '7d' }
+  );
 
   res.cookie('token', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-  }).send({ success: true, message: 'Authentication cookie issued' });
+  }).send({ success: true });
 });
 
 // Clear Cookie on Logout
@@ -93,8 +94,9 @@ app.post('/api/auth/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
-  }).send({ success: true, message: 'Logged out successfully' });
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    maxAge: 0,
+  }).send({ success: true });
 });
 
 // --- STUDIOS CRUD ENDPOINTS ---
@@ -140,6 +142,9 @@ app.get('/api/studios', async (req, res, next) => {
 app.get('/api/studios/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: 'Invalid studio ID format' });
+    }
     const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
     if (!studio) {
       return res.status(404).send({ message: 'Studio space not found' });
@@ -155,12 +160,12 @@ app.post('/api/studios', verifyToken, async (req, res, next) => {
   try {
     const newStudio = {
       ...req.body,
-      hourlyRate: parseFloat(req.body.hourlyRate),
-      securityDeposit: parseFloat(req.body.securityDeposit),
-      maxCapacity: parseInt(req.body.maxCapacity),
+      hourlyRate: req.body.hourlyRate !== undefined ? parseFloat(req.body.hourlyRate) : 0,
+      securityDeposit: req.body.securityDeposit !== undefined ? parseFloat(req.body.securityDeposit) : 0,
+      maxCapacity: req.body.maxCapacity !== undefined ? parseInt(req.body.maxCapacity) : 1,
       ownerEmail: req.user.email,
-      rating: 5.0,
-      reviewsCount: 0,
+      rating: req.body.rating !== undefined ? parseFloat(req.body.rating) : 5.0,
+      reviewsCount: req.body.reviewsCount !== undefined ? parseInt(req.body.reviewsCount) : 0,
       createdAt: new Date()
     };
 
@@ -184,17 +189,38 @@ app.get('/api/my-listings', verifyToken, async (req, res, next) => {
   }
 });
 
-// 6. Update Studio Listing (Private Route - Ensures user owns the document)
-app.patch('/api/studios/:id', verifyToken, async (req, res, next) => {
+// Also support GET /api/studios/user/:email
+app.get('/api/studios/user/:email', verifyToken, async (req, res, next) => {
+  try {
+    const { email } = req.params;
+    if (req.user.email !== email) {
+      return res.status(403).send({ message: 'Forbidden: Cannot view listings for another user' });
+    }
+    const listings = await studiosCollection
+      .find({ ownerEmail: email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(listings);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 6. Update Studio Listing (Private Route - PUT and PATCH supported, ensures user owns document)
+const updateStudioHandler = async (req, res, next) => {
   try {
     const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: 'Invalid studio ID format' });
+    }
+
     const updateData = { ...req.body };
     delete updateData._id;
     delete updateData.ownerEmail;
 
-    if (updateData.hourlyRate) updateData.hourlyRate = parseFloat(updateData.hourlyRate);
-    if (updateData.securityDeposit) updateData.securityDeposit = parseFloat(updateData.securityDeposit);
-    if (updateData.maxCapacity) updateData.maxCapacity = parseInt(updateData.maxCapacity);
+    if (updateData.hourlyRate !== undefined) updateData.hourlyRate = parseFloat(updateData.hourlyRate);
+    if (updateData.securityDeposit !== undefined) updateData.securityDeposit = parseFloat(updateData.securityDeposit);
+    if (updateData.maxCapacity !== undefined) updateData.maxCapacity = parseInt(updateData.maxCapacity);
 
     const filter = { _id: new ObjectId(id), ownerEmail: req.user.email };
     const updateDoc = { $set: updateData };
@@ -207,12 +233,19 @@ app.patch('/api/studios/:id', verifyToken, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+app.put('/api/studios/:id', verifyToken, updateStudioHandler);
+app.patch('/api/studios/:id', verifyToken, updateStudioHandler);
 
 // 7. Delete Studio Listing (Private Route - Ensures user owns the document)
 app.delete('/api/studios/:id', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: 'Invalid studio ID format' });
+    }
+
     const filter = { _id: new ObjectId(id), ownerEmail: req.user.email };
 
     const result = await studiosCollection.deleteOne(filter);
