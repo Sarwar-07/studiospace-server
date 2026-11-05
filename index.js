@@ -100,7 +100,7 @@ app.post('/api/auth/logout', (req, res) => {
 // --- STUDIOS CRUD ENDPOINTS ---
 
 // 1. Featured Studios (Home page dynamic section - limit 6)
-app.get('/api/studios/featured', async (req, res) => {
+app.get('/api/studios/featured', async (req, res, next) => {
   try {
     const featured = await studiosCollection
       .find({})
@@ -109,12 +109,12 @@ app.get('/api/studios/featured', async (req, res) => {
       .toArray();
     res.send(featured);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to fetch featured studios', error });
+    next(error);
   }
 });
 
 // 2. Explore Studios (With category filtering and search queries)
-app.get('/api/studios', async (req, res) => {
+app.get('/api/studios', async (req, res, next) => {
   try {
     const { category, search } = req.query;
     let query = {};
@@ -132,12 +132,12 @@ app.get('/api/studios', async (req, res) => {
     const studios = await studiosCollection.find(query).toArray();
     res.send(studios);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to fetch studios', error });
+    next(error);
   }
 });
 
 // 3. Single Studio Details
-app.get('/api/studios/:id', async (req, res) => {
+app.get('/api/studios/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     const studio = await studiosCollection.findOne({ _id: new ObjectId(id) });
@@ -146,12 +146,12 @@ app.get('/api/studios/:id', async (req, res) => {
     }
     res.send(studio);
   } catch (error) {
-    res.status(400).send({ message: 'Invalid Studio ID format', error });
+    next(error);
   }
 });
 
 // 4. Add New Studio (Private Route - Guarded by verifyToken)
-app.post('/api/studios', verifyToken, async (req, res) => {
+app.post('/api/studios', verifyToken, async (req, res, next) => {
   try {
     const newStudio = {
       ...req.body,
@@ -167,12 +167,12 @@ app.post('/api/studios', verifyToken, async (req, res) => {
     const result = await studiosCollection.insertOne(newStudio);
     res.status(201).send(result);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to save studio listing', error });
+    next(error);
   }
 });
 
 // 5. My Studio Listings (Private Route - Filtered by authenticated ownerEmail)
-app.get('/api/my-listings', verifyToken, async (req, res) => {
+app.get('/api/my-listings', verifyToken, async (req, res, next) => {
   try {
     const listings = await studiosCollection
       .find({ ownerEmail: req.user.email })
@@ -180,12 +180,12 @@ app.get('/api/my-listings', verifyToken, async (req, res) => {
       .toArray();
     res.send(listings);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to retrieve your listings', error });
+    next(error);
   }
 });
 
 // 6. Update Studio Listing (Private Route - Ensures user owns the document)
-app.patch('/api/studios/:id', verifyToken, async (req, res) => {
+app.patch('/api/studios/:id', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
     const updateData = { ...req.body };
@@ -205,12 +205,12 @@ app.patch('/api/studios/:id', verifyToken, async (req, res) => {
     }
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to update studio listing', error });
+    next(error);
   }
 });
 
 // 7. Delete Studio Listing (Private Route - Ensures user owns the document)
-app.delete('/api/studios/:id', verifyToken, async (req, res) => {
+app.delete('/api/studios/:id', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
     const filter = { _id: new ObjectId(id), ownerEmail: req.user.email };
@@ -221,14 +221,14 @@ app.delete('/api/studios/:id', verifyToken, async (req, res) => {
     }
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to delete studio listing', error });
+    next(error);
   }
 });
 
 // --- CHALLENGE 2: BOOKINGS & DOUBLE-BOOKING PREVENTION ---
 
 // 1. Create Booking with Overlap Detection
-app.post('/api/bookings', verifyToken, async (req, res) => {
+app.post('/api/bookings', verifyToken, async (req, res, next) => {
   try {
     const { studioId, bookingDate, startTime, endTime, hourlyRate, studioTitle, studioImage } = req.body;
     const sTime = parseInt(startTime);
@@ -276,12 +276,12 @@ app.post('/api/bookings', verifyToken, async (req, res) => {
     const result = await bookingsCollection.insertOne(newBooking);
     res.status(201).send(result);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to create booking', error });
+    next(error);
   }
 });
 
 // 2. My Bookings (Private Route - Fetch user reservations)
-app.get('/api/my-bookings', verifyToken, async (req, res) => {
+app.get('/api/my-bookings', verifyToken, async (req, res, next) => {
   try {
     const bookings = await bookingsCollection
       .find({ userEmail: req.user.email })
@@ -289,12 +289,12 @@ app.get('/api/my-bookings', verifyToken, async (req, res) => {
       .toArray();
     res.send(bookings);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to fetch bookings', error });
+    next(error);
   }
 });
 
 // 3. Cancel Booking (Private Route - Only allowed for pending bookings)
-app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
+app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
     const filter = {
@@ -313,14 +313,14 @@ app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res) => {
 
     res.send({ success: true, message: 'Booking successfully cancelled' });
   } catch (error) {
-    res.status(500).send({ message: 'Failed to cancel booking', error });
+    next(error);
   }
 });
 
 // --- OPTIONAL REQUIREMENT: SAVED STUDIOS WISHLIST ---
 
 // 1. Save Studio to Wishlist
-app.post('/api/wishlist', verifyToken, async (req, res) => {
+app.post('/api/wishlist', verifyToken, async (req, res, next) => {
   try {
     const { studioId } = req.body;
     if (!studioId) return res.status(400).send({ message: 'Studio ID is required' });
@@ -342,12 +342,12 @@ app.post('/api/wishlist', verifyToken, async (req, res) => {
 
     res.status(201).send(result);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to add to wishlist', error });
+    next(error);
   }
 });
 
 // 2. Get User Wishlist with Studio Details via Aggregation
-app.get('/api/wishlist', verifyToken, async (req, res) => {
+app.get('/api/wishlist', verifyToken, async (req, res, next) => {
   try {
     const wishlist = await wishlistCollection.aggregate([
       { $match: { userEmail: req.user.email } },
@@ -365,12 +365,12 @@ app.get('/api/wishlist', verifyToken, async (req, res) => {
 
     res.send(wishlist);
   } catch (error) {
-    res.status(500).send({ message: 'Failed to retrieve wishlist', error });
+    next(error);
   }
 });
 
 // 3. Remove Studio from Wishlist
-app.delete('/api/wishlist/:studioId', verifyToken, async (req, res) => {
+app.delete('/api/wishlist/:studioId', verifyToken, async (req, res, next) => {
   try {
     const { studioId } = req.params;
     const result = await wishlistCollection.deleteOne({
@@ -384,26 +384,20 @@ app.delete('/api/wishlist/:studioId', verifyToken, async (req, res) => {
 
     res.send({ success: true, message: 'Removed from wishlist' });
   } catch (error) {
-    res.status(500).send({ message: 'Failed to remove from wishlist', error });
+    next(error);
   }
 });
 
 // --- DASHBOARD ANALYTICS & STATS AGGREGATION ---
 
-app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
+app.get('/api/dashboard/stats', verifyToken, async (req, res, next) => {
   try {
     const email = req.user.email;
 
-    // 1. Total listed studios as a Host
     const totalListings = await studiosCollection.countDocuments({ ownerEmail: email });
-
-    // 2. Total reservations made as a Creator
     const totalBookings = await bookingsCollection.countDocuments({ userEmail: email });
-
-    // 3. Total items in Wishlist
     const totalWishlist = await wishlistCollection.countDocuments({ userEmail: email });
 
-    // 4. Financial metrics: Total spent on completed/pending bookings
     const expenditureAggregate = await bookingsCollection.aggregate([
       { $match: { userEmail: email, status: { $ne: 'Cancelled' } } },
       { $group: { _id: null, totalSpent: { $sum: '$totalPrice' } } }
@@ -418,13 +412,30 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       totalSpent
     });
   } catch (error) {
-    res.status(500).send({ message: 'Failed to fetch dashboard metrics', error });
+    next(error);
   }
 });
 
-// Base Route
+// Health check / Base Route
 app.get('/', (req, res) => {
   res.send('StudioSpace API Server is active and connected.');
+});
+
+// 404 Route Catcher for Unhandled Endpoints
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Endpoint ${req.originalUrl} not found on StudioSpace server.`
+  });
+});
+
+// Centralized Global Error Handler Middleware
+app.use((err, req, res, next) => {
+  console.error('Server Internal Error:', err);
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || 'Internal Server Error'
+  });
 });
 
 app.listen(port, () => {
