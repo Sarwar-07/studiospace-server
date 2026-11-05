@@ -1,5 +1,9 @@
 import dns from 'node:dns';
-dns.setServers(['8.8.8.8', '1.1.1.1']);
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  // Ignored in environments where custom DNS servers cannot be set
+}
 
 import express from 'express';
 import cors from 'cors';
@@ -24,32 +28,100 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// MongoDB Client Initialization
+// MongoDB Client Initialization with Serverless-safe Connection Caching
 const uri = process.env.MONGODB_URI;
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
+let client = null;
+let db = null;
+let studiosCollection = null;
+let bookingsCollection = null;
+let wishlistCollection = null;
 
-const db = client.db(process.env.DB_NAME || 'studiospace_db');
-const studiosCollection = db.collection('studios');
-const bookingsCollection = db.collection('bookings');
-const wishlistCollection = db.collection('wishlist');
-
-async function connectDB() {
+if (uri) {
   try {
-    await client.connect();
-    await client.db('admin').command({ ping: 1 });
-    console.log(`Connected to MongoDB Atlas: database "${process.env.DB_NAME || 'studiospace_db'}" is ready!`);
-  } catch (error) {
-    console.error('MongoDB connection failure:', error);
+    client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      }
+    });
+    db = client.db(process.env.DB_NAME || 'studiospace_db');
+    studiosCollection = db.collection('studios');
+    bookingsCollection = db.collection('bookings');
+    wishlistCollection = db.collection('wishlist');
+  } catch (err) {
+    console.error('Failed to initialize MongoDB client:', err.message);
   }
 }
 
-connectDB();
+let isConnecting = false;
+async function connectDB() {
+  if (!uri) {
+    console.warn('MONGODB_URI is not configured.');
+    return null;
+  }
+
+  if (isConnecting) {
+    let attempts = 0;
+    while (isConnecting && attempts < 25) {
+      await new Promise(r => setTimeout(r, 100));
+      attempts++;
+    }
+    return db;
+  }
+
+  isConnecting = true;
+  try {
+    if (!client) {
+      client = new MongoClient(uri, {
+        serverApi: {
+          version: ServerApiVersion.v1,
+          strict: true,
+          deprecationErrors: true,
+        }
+      });
+      db = client.db(process.env.DB_NAME || 'studiospace_db');
+      studiosCollection = db.collection('studios');
+      bookingsCollection = db.collection('bookings');
+      wishlistCollection = db.collection('wishlist');
+    }
+
+    await client.connect();
+    console.log(`Connected to MongoDB Atlas: database "${process.env.DB_NAME || 'studiospace_db'}" is ready!`);
+    return db;
+  } catch (error) {
+    console.error('MongoDB connection failure in serverless environment:', error.message);
+    return null;
+  } finally {
+    isConnecting = false;
+  }
+}
+
+// Initial connection attempt wrapped so unhandled promises never crash serverless boot
+connectDB().catch(err => {
+  console.error('Initial connectDB unhandled error:', err.message);
+});
+
+// Middleware to ensure DB connection is ready for database-dependent routes
+app.use(async (req, res, next) => {
+  // Let health check and basic auth endpoints respond without blocking on DB
+  if (req.path === '/' || req.path === '/api/auth/jwt' || req.path === '/api/auth/logout') {
+    return next();
+  }
+
+  try {
+    if (!db || !studiosCollection) {
+      await connectDB();
+    }
+    next();
+  } catch (err) {
+    console.error('Database connection middleware error:', err);
+    res.status(503).json({
+      success: false,
+      message: 'Database service is currently initializing or unavailable'
+    });
+  }
+});
 
 // --- CHALLENGE 1: JWT & HTTPONLY COOKIE MIDDLEWARE ---
 
@@ -451,7 +523,10 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res, next) => {
 
 // Health check / Base Route
 app.get('/', (req, res) => {
-  res.send('StudioSpace API Server is active and connected.');
+  res.status(200).json({ 
+    message: 'StudioSpace API Server is active',
+    status: 'healthy' 
+  });
 });
 
 // 404 Route Catcher for Unhandled Endpoints
@@ -471,6 +546,13 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(port, () => {
+    console.log(`Server listening on port ${port}`);
+  });
+}
+
+export default app;
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = app;
+}
