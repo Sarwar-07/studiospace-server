@@ -17,6 +17,15 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
+// Normalize /index.js prefix if forwarded by Vercel serverless rewrite
+app.use((req, res, next) => {
+  if (req.url.startsWith('/index.js')) {
+    const cleaned = req.url.slice('/index.js'.length);
+    req.url = cleaned.startsWith('/') ? cleaned : '/' + cleaned;
+  }
+  next();
+});
+
 // Multi-origin CORS configuration allowing credentials for HTTPOnly cookies & dynamic Vercel deployments
 const allowedOrigins = [
   'https://studiospace-client-eta-six.vercel.app',
@@ -132,7 +141,15 @@ connectDB().catch(err => {
 // Middleware to ensure DB connection is ready for database-dependent routes
 app.use(async (req, res, next) => {
   // Let health check and basic auth endpoints respond without blocking on DB
-  if (req.path === '/' || req.path === '/api/auth/jwt' || req.path === '/api/auth/logout') {
+  if (
+    req.path === '/' ||
+    req.path === '/health' ||
+    req.path === '/api/health' ||
+    req.path === '/api/auth/jwt' ||
+    req.path === '/auth/jwt' ||
+    req.path === '/api/auth/logout' ||
+    req.path === '/auth/logout'
+  ) {
     return next();
   }
 
@@ -168,8 +185,13 @@ export const verifyToken = (req, res, next) => {
   });
 };
 
+// ==========================================
+// 1. AUTH ROUTES (/api/auth & /auth)
+// ==========================================
+const authRouter = express.Router();
+
 // Generate JWT and set HTTPOnly Cookie upon login
-app.post('/api/auth/jwt', async (req, res) => {
+authRouter.post('/jwt', async (req, res) => {
   const { email } = req.body;
   if (!email) {
     return res.status(400).send({ message: 'Email is required' });
@@ -189,7 +211,7 @@ app.post('/api/auth/jwt', async (req, res) => {
 });
 
 // Clear Cookie on Logout
-app.post('/api/auth/logout', (req, res) => {
+authRouter.post('/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -198,10 +220,16 @@ app.post('/api/auth/logout', (req, res) => {
   }).send({ success: true });
 });
 
-// --- STUDIOS CRUD ENDPOINTS ---
+app.use('/api/auth', authRouter);
+app.use('/auth', authRouter);
+
+// ==========================================
+// 2. STUDIOS CRUD ROUTES (/api/studios & /studios)
+// ==========================================
+const studiosRouter = express.Router();
 
 // 1. Featured Studios (Home page dynamic section - limit 6)
-app.get('/api/studios/featured', async (req, res, next) => {
+studiosRouter.get('/featured', async (req, res, next) => {
   try {
     const featured = await studiosCollection
       .find({})
@@ -214,8 +242,25 @@ app.get('/api/studios/featured', async (req, res, next) => {
   }
 });
 
-// 2. Explore Studios (With category filtering and search queries)
-app.get('/api/studios', async (req, res, next) => {
+// 2. User-specific Studios Listings (GET /api/studios/user/:email)
+studiosRouter.get('/user/:email', verifyToken, async (req, res, next) => {
+  try {
+    const { email } = req.params;
+    if (req.user.email !== email) {
+      return res.status(403).send({ message: 'Forbidden: Cannot view listings for another user' });
+    }
+    const listings = await studiosCollection
+      .find({ ownerEmail: email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(listings);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 3. Explore Studios (With category filtering and search queries)
+studiosRouter.get('/', async (req, res, next) => {
   try {
     const { category, search } = req.query;
     let query = {};
@@ -237,8 +282,8 @@ app.get('/api/studios', async (req, res, next) => {
   }
 });
 
-// 3. Single Studio Details
-app.get('/api/studios/:id', async (req, res, next) => {
+// 4. Single Studio Details
+studiosRouter.get('/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -254,8 +299,8 @@ app.get('/api/studios/:id', async (req, res, next) => {
   }
 });
 
-// 4. Add New Studio (Private Route - Guarded by verifyToken)
-app.post('/api/studios', verifyToken, async (req, res, next) => {
+// 5. Add New Studio (Private Route - Guarded by verifyToken)
+studiosRouter.post('/', verifyToken, async (req, res, next) => {
   try {
     const newStudio = {
       ...req.body,
@@ -275,37 +320,7 @@ app.post('/api/studios', verifyToken, async (req, res, next) => {
   }
 });
 
-// 5. My Studio Listings (Private Route - Filtered by authenticated ownerEmail)
-app.get('/api/my-listings', verifyToken, async (req, res, next) => {
-  try {
-    const listings = await studiosCollection
-      .find({ ownerEmail: req.user.email })
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.send(listings);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Also support GET /api/studios/user/:email
-app.get('/api/studios/user/:email', verifyToken, async (req, res, next) => {
-  try {
-    const { email } = req.params;
-    if (req.user.email !== email) {
-      return res.status(403).send({ message: 'Forbidden: Cannot view listings for another user' });
-    }
-    const listings = await studiosCollection
-      .find({ ownerEmail: email })
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.send(listings);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// 6. Update Studio Listing (Private Route - PUT and PATCH supported, ensures user owns document)
+// 6. Update Studio Listing (Private Route - PUT and PATCH supported)
 const updateStudioHandler = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -334,11 +349,11 @@ const updateStudioHandler = async (req, res, next) => {
   }
 };
 
-app.put('/api/studios/:id', verifyToken, updateStudioHandler);
-app.patch('/api/studios/:id', verifyToken, updateStudioHandler);
+studiosRouter.put('/:id', verifyToken, updateStudioHandler);
+studiosRouter.patch('/:id', verifyToken, updateStudioHandler);
 
-// 7. Delete Studio Listing (Private Route - Ensures user owns the document)
-app.delete('/api/studios/:id', verifyToken, async (req, res, next) => {
+// 7. Delete Studio Listing (Private Route - Ensures user owns document)
+studiosRouter.delete('/:id', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -357,10 +372,30 @@ app.delete('/api/studios/:id', verifyToken, async (req, res, next) => {
   }
 });
 
-// --- CHALLENGE 2: BOOKINGS & DOUBLE-BOOKING PREVENTION ---
+app.use('/api/studios', studiosRouter);
+app.use('/studios', studiosRouter);
+
+// Host's Own Studio Listings (/api/my-listings & /my-listings)
+const myListingsHandler = async (req, res, next) => {
+  try {
+    const listings = await studiosCollection
+      .find({ ownerEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(listings);
+  } catch (error) {
+    next(error);
+  }
+};
+app.get(['/api/my-listings', '/my-listings'], verifyToken, myListingsHandler);
+
+// ==========================================
+// 3. BOOKINGS ROUTES (/api/bookings & /bookings)
+// ==========================================
+const bookingsRouter = express.Router();
 
 // 1. Create Booking with Overlap Detection
-app.post('/api/bookings', verifyToken, async (req, res, next) => {
+bookingsRouter.post('/', verifyToken, async (req, res, next) => {
   try {
     const { studioId, bookingDate, startTime, endTime, hourlyRate, studioTitle, studioImage } = req.body;
     const sTime = parseInt(startTime);
@@ -412,21 +447,8 @@ app.post('/api/bookings', verifyToken, async (req, res, next) => {
   }
 });
 
-// 2. My Bookings (Private Route - Fetch user reservations)
-app.get('/api/my-bookings', verifyToken, async (req, res, next) => {
-  try {
-    const bookings = await bookingsCollection
-      .find({ userEmail: req.user.email })
-      .sort({ createdAt: -1 })
-      .toArray();
-    res.send(bookings);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// 3. Cancel Booking (Private Route - Only allowed for pending bookings)
-app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res, next) => {
+// 2. Cancel Booking
+bookingsRouter.patch('/:id/cancel', verifyToken, async (req, res, next) => {
   try {
     const { id } = req.params;
     const filter = {
@@ -449,10 +471,30 @@ app.patch('/api/bookings/:id/cancel', verifyToken, async (req, res, next) => {
   }
 });
 
-// --- OPTIONAL REQUIREMENT: SAVED STUDIOS WISHLIST ---
+app.use('/api/bookings', bookingsRouter);
+app.use('/bookings', bookingsRouter);
+
+// User's Own Bookings (/api/my-bookings & /my-bookings)
+const myBookingsHandler = async (req, res, next) => {
+  try {
+    const bookings = await bookingsCollection
+      .find({ userEmail: req.user.email })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.send(bookings);
+  } catch (error) {
+    next(error);
+  }
+};
+app.get(['/api/my-bookings', '/my-bookings'], verifyToken, myBookingsHandler);
+
+// ==========================================
+// 4. WISHLIST ROUTES (/api/wishlist & /wishlist)
+// ==========================================
+const wishlistRouter = express.Router();
 
 // 1. Save Studio to Wishlist
-app.post('/api/wishlist', verifyToken, async (req, res, next) => {
+wishlistRouter.post('/', verifyToken, async (req, res, next) => {
   try {
     const { studioId } = req.body;
     if (!studioId) return res.status(400).send({ message: 'Studio ID is required' });
@@ -479,7 +521,7 @@ app.post('/api/wishlist', verifyToken, async (req, res, next) => {
 });
 
 // 2. Get User Wishlist with Studio Details via Aggregation
-app.get('/api/wishlist', verifyToken, async (req, res, next) => {
+wishlistRouter.get('/', verifyToken, async (req, res, next) => {
   try {
     const wishlist = await wishlistCollection.aggregate([
       { $match: { userEmail: req.user.email } },
@@ -502,7 +544,7 @@ app.get('/api/wishlist', verifyToken, async (req, res, next) => {
 });
 
 // 3. Remove Studio from Wishlist
-app.delete('/api/wishlist/:studioId', verifyToken, async (req, res, next) => {
+wishlistRouter.delete('/:studioId', verifyToken, async (req, res, next) => {
   try {
     const { studioId } = req.params;
     const result = await wishlistCollection.deleteOne({
@@ -520,9 +562,15 @@ app.delete('/api/wishlist/:studioId', verifyToken, async (req, res, next) => {
   }
 });
 
-// --- DASHBOARD ANALYTICS & STATS AGGREGATION ---
+app.use('/api/wishlist', wishlistRouter);
+app.use('/wishlist', wishlistRouter);
 
-app.get('/api/dashboard/stats', verifyToken, async (req, res, next) => {
+// ==========================================
+// 5. DASHBOARD STATS (/api/dashboard & /dashboard)
+// ==========================================
+const dashboardRouter = express.Router();
+
+dashboardRouter.get('/stats', verifyToken, async (req, res, next) => {
   try {
     const email = req.user.email;
 
@@ -548,15 +596,23 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res, next) => {
   }
 });
 
-// Health check / Base Route
-app.get('/', (req, res) => {
+app.use('/api/dashboard', dashboardRouter);
+app.use('/dashboard', dashboardRouter);
+
+// ==========================================
+// 6. HEALTH CHECK & BASE ROUTES
+// ==========================================
+app.get(['/', '/health', '/api/health'], (req, res) => {
   res.status(200).json({ 
     message: 'StudioSpace API Server is active',
     status: 'healthy' 
   });
 });
 
-// 404 Route Catcher for Unhandled Endpoints
+// ==========================================
+// 7. 404 CATCH-ALL & GLOBAL ERROR HANDLER
+// ==========================================
+// 404 Route Catcher for Unhandled Endpoints (strictly placed after all routes)
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -580,6 +636,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export default app;
+export { app };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = app;
 }
