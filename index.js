@@ -17,14 +17,41 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// CORS configuration allowing credentials for HTTPOnly cookies
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    process.env.CLIENT_URL,
-  ].filter(Boolean),
+// Multi-origin CORS configuration allowing credentials for HTTPOnly cookies & dynamic Vercel deployments
+const allowedOrigins = [
+  'https://studiospace-client-eta-six.vercel.app',
+  'https://studiospace-client-git-main-sarwar5.vercel.app',
+  'http://localhost:3000',
+  process.env.CLIENT_URL,
+].filter(Boolean);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.vercel.app') // Automatically trust your Vercel deployments
+    ) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked origin: ${origin}`));
+    }
+  },
   credentials: true,
-}));
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+
+// Ensure preflight OPTIONS requests return 204/200 immediately
+try {
+  app.options('*', cors(corsOptions));
+} catch {
+  app.options(/(.*)/, cors(corsOptions));
+}
 app.use(express.json());
 app.use(cookieParser());
 
