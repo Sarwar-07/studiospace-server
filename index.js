@@ -170,19 +170,27 @@ app.use(async (req, res, next) => {
 // --- CHALLENGE 1: JWT & HTTPONLY COOKIE MIDDLEWARE ---
 
 export const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
+  const authHeader = req.headers.authorization;
+  const token =
+    authHeader && authHeader.startsWith('Bearer ')
+      ? authHeader.split(' ')[1]
+      : req.cookies?.token;
 
   if (!token) {
-    return res.status(401).send({ message: 'Unauthorized access: No token provided' });
+    return res.status(401).send({ message: 'Unauthorized: No token provided' });
   }
 
-  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return res.status(401).send({ message: 'Unauthorized access: Invalid or expired token' });
+  jwt.verify(
+    token,
+    process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET,
+    (err, decoded) => {
+      if (err) {
+        return res.status(401).send({ message: 'Unauthorized: Invalid token' });
+      }
+      req.user = decoded;
+      next();
     }
-    req.user = decoded;
-    next();
-  });
+  );
 };
 
 // ==========================================
@@ -190,38 +198,43 @@ export const verifyToken = (req, res, next) => {
 // ==========================================
 const authRouter = express.Router();
 
-// Generate JWT and set HTTPOnly Cookie upon login
-authRouter.post('/jwt', async (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).send({ message: 'Email is required' });
-  }
-
+const jwtHandler = async (req, res) => {
+  const user = req.body;
   const token = jwt.sign(
-    { email },
+    user,
     process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET,
     { expiresIn: '7d' }
   );
 
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-  }).send({ success: true });
-});
+  res
+    .cookie('token', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+    })
+    .send({ success: true, token });
+};
 
+const logoutHandler = (req, res) => {
+  res
+    .clearCookie('token', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: 0,
+    })
+    .send({ success: true });
+};
+
+// Generate JWT and set HTTPOnly Cookie upon login
+authRouter.post('/jwt', jwtHandler);
 // Clear Cookie on Logout
-authRouter.post('/logout', (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-    maxAge: 0,
-  }).send({ success: true });
-});
+authRouter.post('/logout', logoutHandler);
 
 app.use('/api/auth', authRouter);
 app.use('/auth', authRouter);
+app.post(['/jwt', '/api/jwt'], jwtHandler);
+app.post(['/logout', '/api/logout'], logoutHandler);
 
 // ==========================================
 // 2. STUDIOS CRUD ROUTES (/api/studios & /studios)
